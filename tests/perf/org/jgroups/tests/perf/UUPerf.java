@@ -12,13 +12,19 @@ import org.jgroups.util.*;
 import javax.management.MBeanServer;
 import java.io.DataInput;
 import java.io.DataOutput;
+import java.io.Externalizable;
+import java.io.IOException;
+import java.io.ObjectInput;
+import java.io.ObjectOutput;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.text.NumberFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
@@ -36,39 +42,34 @@ public class UUPerf extends ReceiverAdapter {
 
 
     // ============ configurable properties ==================
-    private boolean sync=true, oob=true;
-    private int num_threads=2;
-    private int num_msgs=1, msg_size=(int)(4.5 * 1000 * 1000);
+    private ConfigOptions config = new ConfigOptions();
     // =======================================================
 
     private static final Method[] METHODS=new Method[15];
 
     private static final short START=0;
-    private static final short SET_OOB=1;
-    private static final short SET_SYNC=2;
-    private static final short SET_NUM_MSGS=3;
-    private static final short SET_NUM_THREADS=4;
-    private static final short SET_MSG_SIZE=5;
-    private static final short APPLY_STATE=6;
-    private static final short GET_CONFIG=10;
+    private static final short SET_CONFIG=1;
+    private static final short GET_CONFIG=2;
+    private static final short SET_PROPS=3;
+    private static final short GET_PROPS=4;
+    private static final short APPLY_STATE=5;
 
     private final AtomicInteger COUNTER=new AtomicInteger(1);
-    private byte[] GET_RSP=new byte[msg_size];
 
 
     static NumberFormat f;
+    private static final int NUM_LOOPS = 100;
+    private static final int TIMEOUT=120000;
 
 
     static {
         try {
-            METHODS[START]=UUPerf.class.getMethod("startTest");
-            METHODS[SET_OOB]=UUPerf.class.getMethod("setOOB",boolean.class);
-            METHODS[SET_SYNC]=UUPerf.class.getMethod("setSync",boolean.class);
-            METHODS[SET_NUM_MSGS]=UUPerf.class.getMethod("setNumMessages",int.class);
-            METHODS[SET_NUM_THREADS]=UUPerf.class.getMethod("setNumThreads",int.class);
-            METHODS[SET_MSG_SIZE]=UUPerf.class.getMethod("setMessageSize",int.class);
-            METHODS[APPLY_STATE]=UUPerf.class.getMethod("applyState",byte[].class);
+            METHODS[START]=UUPerf.class.getMethod("runTest",Address.class);
+            METHODS[SET_CONFIG]=UUPerf.class.getMethod("setConfig",ConfigOptions.class);
             METHODS[GET_CONFIG]=UUPerf.class.getMethod("getConfig");
+            METHODS[SET_PROPS]=UUPerf.class.getMethod("setProps",String.class);
+            METHODS[GET_PROPS]=UUPerf.class.getMethod("getProps");
+            METHODS[APPLY_STATE]=UUPerf.class.getMethod("applyState", byte[].class);
 
             ClassConfigurator.add((short)12000,Results.class);
             f=NumberFormat.getNumberInstance();
@@ -92,7 +93,6 @@ public class UUPerf extends ReceiverAdapter {
                 return METHODS[id];
             }
         });
-        disp.setRequestMarshaller(new CustomMarshaller());
         channel.connect(groupname);
         local_addr=channel.getAddress();
 
@@ -109,11 +109,7 @@ public class UUPerf extends ReceiverAdapter {
         Address coord=members.get(0);
         ConfigOptions config=(ConfigOptions)disp.callRemoteMethod(coord,new MethodCall(GET_CONFIG),new RequestOptions(ResponseMode.GET_ALL,5000));
         if(config != null) {
-            this.oob=config.oob;
-            this.sync=config.sync;
-            this.num_threads=config.num_threads;
-            this.num_msgs=config.num_msgs;
-            this.msg_size=config.msg_size;
+            this.config=config;
             System.out.println("Fetched config from " + coord + ": " + config);
         }
         else
@@ -134,20 +130,15 @@ public class UUPerf extends ReceiverAdapter {
 
     // =================================== callbacks ======================================
 
-    public Results startTest() throws Throwable {
-        if(members.indexOf(local_addr) == members.size() - 1) {
-            System.out.println("This is the joiner, not sending any state");
-            return new Results(0,0);
-        }
-
-        System.out.println("invoking " + num_msgs + " RPCs of " + Util.printBytes(msg_size) + ", sync=" + sync + ", oob=" + oob);
+    public Results runTest(Address dest) throws Throwable {
+        System.out.println("invoking RPCs with " + config);
         final AtomicInteger num_msgs_sent=new AtomicInteger(0);
 
-        Invoker[] invokers=new Invoker[num_threads];
+        Invoker[] invokers=new Invoker[config.num_threads];
         for(int i=0; i < invokers.length; i++)
-            invokers[i]=new Invoker(members,num_msgs,num_msgs_sent);
+            invokers[i]=new Invoker(dest,config.num_msgs,num_msgs_sent);
 
-        long start=System.currentTimeMillis();
+        long startNanos=System.nanoTime();
         for(Invoker invoker : invokers)
             invoker.start();
 
@@ -155,43 +146,40 @@ public class UUPerf extends ReceiverAdapter {
             invoker.join();
         }
 
-        long total_time=System.currentTimeMillis() - start;
+        long total_time= TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
         System.out.println("done (in " + total_time + " ms)");
         return new Results(num_msgs_sent.get(),total_time);
     }
 
 
-    public void setOOB(boolean oob) {
-        this.oob=oob;
-        System.out.println("oob=" + oob);
+    public void setConfig(ConfigOptions config) {
+        this.config=config;
+        System.out.println("Updated configuration: " + config);
     }
 
-    public void setSync(boolean val) {
-        this.sync=val;
-        System.out.println("sync=" + sync);
+    public ConfigOptions getConfig() {
+        return config;
     }
 
-    public void setNumMessages(int num) {
-        num_msgs=num;
-        System.out.println("num_msgs = " + num_msgs);
+    public void setProps(String newProps) {
+        String name = channel.getName();
+        int memberIndex = channel.getView().getMembers().indexOf(local_addr);
+        channel.close();
+        System.out.println("Stopped channel. Restarting with props " + newProps);
+        try {
+            Thread.sleep(memberIndex * 100);
+            init(newProps, name);
+        } catch (Throwable throwable) {
+            throwable.printStackTrace();
+        }
     }
-
-    public void setNumThreads(int num) {
-        num_threads=num;
-        System.out.println("num_threads = " + num_threads);
-    }
-
-    public void setMessageSize(int num) {
-        msg_size=num;
-        System.out.println("msg_size = " + msg_size);
+    
+    public String getProps() {
+        return channel.getProperties();
     }
 
     public static void applyState(byte[] val) {
         System.out.println("-- applyState(): " + Util.printBytes(val.length));
-    }
-
-    public ConfigOptions getConfig() {
-        return new ConfigOptions(oob,sync,num_threads,num_msgs,msg_size);
     }
 
     // ================================= end of callbacks =====================================
@@ -201,12 +189,13 @@ public class UUPerf extends ReceiverAdapter {
         int c;
 
         while(true) {
-            c=Util.keyPress("[1] Send msgs [2] Print view [3] Print conns " +
-                              "[4] Trash conn [5] Trash all conns" +
-                              "\n[6] Set sender threads (" + num_threads + ") [7] Set num msgs (" + num_msgs + ") " +
-                              "[8] Set msg size (" + Util.printBytes(msg_size) + ")" +
-                              "\n[o] Toggle OOB (" + oob + ") [s] Toggle sync (" + sync + ")" +
+            c=Util.keyPress("[1] Send msgs [2] Print view [3] Print conns [4] Trash conn [5] Trash all conns" +
+                              "\n[6] Set sender threads (" + config.num_threads + ") [7] Set num msgs (" + config.num_msgs + ") " +
+                              "[8] Set msg size (" + Util.printBytes(config.msg_size) + ")" +
+                              "\n[o] Toggle OOB (" + config.oob + ") [s] Toggle sync (" + config.sync + ")" +
+                              "\n[f] Toggle FC (" + config.fc + ") [r] Toggle RSVP (" + config.rsvp + ")" +
                               "\n[q] Quit\n");
+            ConfigOptions newConfig = new ConfigOptions(config);
             switch(c) {
                 case -1:
                     break;
@@ -240,12 +229,20 @@ public class UUPerf extends ReceiverAdapter {
                     setMessageSize();
                     break;
                 case 'o':
-                    boolean new_value=!oob;
-                    disp.callRemoteMethods(null,new MethodCall(SET_OOB,new_value),RequestOptions.SYNC());
+                    newConfig.oob=!config.oob;
+                    disp.callRemoteMethods(null,new MethodCall(SET_CONFIG,newConfig),RequestOptions.SYNC());
                     break;
                 case 's':
-                    boolean new_val=!sync;
-                    disp.callRemoteMethods(null,new MethodCall(SET_SYNC,new_val),RequestOptions.SYNC());
+                    newConfig.sync=!config.sync;
+                    disp.callRemoteMethods(null,new MethodCall(SET_CONFIG,newConfig),RequestOptions.SYNC());
+                    break;
+                case 'f':
+                    newConfig.fc=!config.fc;
+                    disp.callRemoteMethods(null,new MethodCall(SET_CONFIG,newConfig),RequestOptions.SYNC());
+                    break;
+                case 'r':
+                    newConfig.rsvp=!config.rsvp;
+                    disp.callRemoteMethods(null,new MethodCall(SET_CONFIG,newConfig),RequestOptions.SYNC());
                     break;
                 case 'q':
                     channel.close();
@@ -291,47 +288,88 @@ public class UUPerf extends ReceiverAdapter {
      * Kicks off the benchmark on all cluster nodes
      */
     void startBenchmark() throws Throwable {
-        RequestOptions options=new RequestOptions(ResponseMode.GET_ALL,0);
-        options.setFlags(Message.Flag.OOB,Message.Flag.DONT_BUNDLE);
-        RspList<Object> responses=disp.callRemoteMethods(null,new MethodCall(START),options);
+        // warm-up
+        for (int i = 0; i < NUM_LOOPS/10; i++) {
+            RspList<Results> responses = runTestLoop();
+            for(Map.Entry<Address, Rsp<Results>> entry : responses.entrySet()) {
+                Address mbr=entry.getKey();
+                Rsp<Results> rsp=entry.getValue();
+                Results result=rsp.getValue();
+                // no point in continuing the warm-up if we're getting timeouts
+                if (result.num_msgs < config.num_msgs)
+                    break;
+            }
+        }
 
         long total_reqs=0;
         long total_time=0;
+        long[] max_times = new long[NUM_LOOPS];
+
+        for (int i = 0; i < NUM_LOOPS; i++) {
+            RspList<Results> responses = runTestLoop();
+
+            for(Map.Entry<Address, Rsp<Results>> entry : responses.entrySet()) {
+                Address mbr=entry.getKey();
+                Rsp<Results> rsp=entry.getValue();
+                Results result=rsp.getValue();
+                if (result.num_msgs < config.num_msgs) {
+                    // we had an error on the remote node, stop the test
+                    System.out.println("\n======================= Results: ===========================");
+                    System.out.println("Timeout after " + TIMEOUT + " ms");
+                    return;
+                }
+                total_reqs+=result.num_msgs;
+                total_time+=result.time;
+                max_times[i] = Math.max(max_times[i], result.time);
+                System.out.println(mbr + ": " + result);
+            }
+        }
+        Arrays.sort(max_times);
+        long median_max_time = max_times[(NUM_LOOPS - 1)/2];
+        long percentile_90_max_time = max_times[(NUM_LOOPS - 1)*90/100];
+        long percentile_99_max_time = max_times[(NUM_LOOPS - 1)*99/100];
+        long max_max_time = max_times[NUM_LOOPS - 1];
 
         System.out.println("\n======================= Results: ===========================");
-        for(Map.Entry<Address,Rsp<Object>> entry : responses.entrySet()) {
-            Address mbr=entry.getKey();
-            Rsp rsp=entry.getValue();
-            Results result=(Results)rsp.getValue();
-            total_reqs+=result.num_msgs;
-            total_time+=result.time;
-            System.out.println(mbr + ": " + result);
-        }
-        double total_reqs_sec=total_reqs / (total_time / 1000.0);
-        double throughput=total_reqs_sec * msg_size;
-        double ms_per_req=total_time / (double)total_reqs;
+        double total_reqs_sec=total_time!=0 ? total_reqs / (total_time / 1000.0) : 0;
+        double throughput=total_reqs_sec * config.msg_size;
+        double ms_per_req=total_reqs!=0 ? total_time / (double)total_reqs : 0;
         Protocol prot=channel.getProtocolStack().findProtocol(Util.getUnicastProtocols());
-        System.out.println("\n");
-        System.out.println(Util.bold("Average of " + f.format(total_reqs_sec) + " requests / sec (" +
-                                       Util.printBytes(throughput) + " / sec), " +
-                                       f.format(ms_per_req) + " ms /request (prot=" + prot.getName() + ")"));
+        System.out.println("Average of " + f.format(total_reqs_sec) + " requests/sec (" +
+                                       Util.printBytes(throughput) + "/sec), " +
+                                       f.format(ms_per_req) + " ms/request (prot=" + prot.getName() + ")");
+        System.out.println("Max response time: " + f.format(max_max_time) + ", 99th percentile: " + f.format(percentile_99_max_time) +
+                                       ", 90th percentile: " + f.format(percentile_90_max_time) + ", median: " + f.format(median_max_time));
         System.out.println("\n\n");
+    }
+
+    private RspList<Results> runTestLoop() throws Exception {
+        RequestOptions options=new RequestOptions(ResponseMode.GET_ALL,0);
+        options.setFlags(Message.OOB,Message.DONT_BUNDLE);
+        options.setExclusionList(local_addr);
+        return disp.callRemoteMethods(null, new MethodCall(START, local_addr), options);
     }
 
 
     void setSenderThreads() throws Exception {
-        int threads=Util.readIntFromStdin("Number of sender threads: ");
-        disp.callRemoteMethods(null,new MethodCall(SET_NUM_THREADS,threads),RequestOptions.SYNC());
+        int new_threads=Util.readIntFromStdin("Number of sender threads: ");
+        ConfigOptions newConfig = new ConfigOptions(config);
+        newConfig.num_threads=new_threads;
+        disp.callRemoteMethods(null,new MethodCall(SET_CONFIG,newConfig),RequestOptions.SYNC());
     }
 
     void setNumMessages() throws Exception {
-        int tmp=Util.readIntFromStdin("Number of RPCs: ");
-        disp.callRemoteMethods(null,new MethodCall(SET_NUM_MSGS,tmp),RequestOptions.SYNC());
+        int new_msgs=Util.readIntFromStdin("Number of RPCs: ");
+        ConfigOptions newConfig = new ConfigOptions(config);
+        newConfig.num_msgs=new_msgs;
+        disp.callRemoteMethods(null,new MethodCall(SET_CONFIG,newConfig),RequestOptions.SYNC());
     }
 
     void setMessageSize() throws Exception {
-        int tmp=Util.readIntFromStdin("Message size: ");
-        disp.callRemoteMethods(null,new MethodCall(SET_MSG_SIZE,tmp),RequestOptions.SYNC());
+        int new_size=Util.readIntFromStdin("Message size: ");
+        ConfigOptions newConfig = new ConfigOptions(config);
+        newConfig.msg_size=new_size;
+        disp.callRemoteMethods(null,new MethodCall(SET_CONFIG,newConfig),RequestOptions.SYNC());
     }
 
 
@@ -362,55 +400,57 @@ public class UUPerf extends ReceiverAdapter {
     }
 
     private class Invoker extends Thread {
-        private final List<Address> dests=new ArrayList<Address>();
+        private final Address dest;
         private final int num_msgs_to_send;
         private final AtomicInteger num_msgs_sent;
 
 
-        public Invoker(Collection<Address> dests, int num_msgs_to_send, AtomicInteger num_msgs_sent) {
+        public Invoker(Address dest, int num_msgs_to_send, AtomicInteger num_msgs_sent) {
             this.num_msgs_sent=num_msgs_sent;
-            this.dests.addAll(dests);
+            this.dest=dest;
             this.num_msgs_to_send=num_msgs_to_send;
             setName("Invoker-" + COUNTER.getAndIncrement());
         }
 
 
         public void run() {
-            final byte[] buf=new byte[msg_size];
+            final byte[] buf=new byte[config.msg_size];
             Object[] apply_state_args={buf};
             MethodCall apply_state_call=new MethodCall(APPLY_STATE,apply_state_args);
-            RequestOptions apply_state_options=new RequestOptions(sync? ResponseMode.GET_ALL : ResponseMode.GET_NONE,400000,true,null);
+            RequestOptions apply_state_options=new RequestOptions(config.sync? ResponseMode.GET_ALL : ResponseMode.GET_NONE,TIMEOUT,true,null);
 
-            if(oob) {
-                apply_state_options.setFlags(Message.Flag.OOB);
+            if(config.oob) {
+                apply_state_options.setFlags(Message.OOB);
             }
-            if(sync) {
-                // apply_state_options.setFlags(Message.Flag.DONT_BUNDLE,Message.NO_FC);
-                apply_state_options.setFlags(Message.Flag.DONT_BUNDLE);
+            if(config.sync) {
+                apply_state_options.setFlags(Message.DONT_BUNDLE);
             }
-
-            apply_state_options.setFlags(Message.Flag.RSVP);
+            if (!config.fc) {
+                apply_state_options.setFlags(Message.NO_FC);
+            }
+            if (config.rsvp) {
+                apply_state_options.setFlags(Message.Flag.RSVP);
+            }
 
 
             while(true) {
-                long i=num_msgs_sent.getAndIncrement();
+                long i=num_msgs_sent.get();
                 if(i >= num_msgs_to_send)
                     break;
 
                 try {
-                    Address target=pickApplyStateTarget();
                     apply_state_args[0]=buf;
-                    disp.callRemoteMethod(target,apply_state_call,apply_state_options);
+                    disp.callRemoteMethod(dest,apply_state_call,apply_state_options);
+
+                    num_msgs_sent.incrementAndGet();
                 }
                 catch(Throwable throwable) {
                     throwable.printStackTrace();
+                    break;
                 }
             }
         }
 
-        private Address pickApplyStateTarget() {
-            return dests.get(dests.size() - 1);
-        }
     }
 
 
@@ -439,6 +479,9 @@ public class UUPerf extends ReceiverAdapter {
         }
 
         public String toString() {
+            if (time == 0)
+                return "0 reqs/sec (0 APPLY_STATEs total)";
+
             long total_reqs=num_msgs;
             double total_reqs_per_sec=total_reqs / (time / 1000.0);
 
@@ -447,115 +490,60 @@ public class UUPerf extends ReceiverAdapter {
     }
 
 
-    public static class ConfigOptions implements Streamable {
-        private boolean sync, oob;
-        private int num_threads;
-        private int num_msgs, msg_size;
+    public static class ConfigOptions implements Externalizable {
+        private boolean sync=true, oob=true;
+        private boolean fc=true, rsvp=true;
+        private int num_threads=1;
+        private int num_msgs=1, msg_size=4500000;
 
         public ConfigOptions() {
         }
 
-        public ConfigOptions(boolean oob, boolean sync, int num_threads, int num_msgs, int msg_size) {
+        public ConfigOptions(ConfigOptions old) {
+            this.oob=old.oob;
+            this.sync=old.sync;
+            this.fc=old.fc;
+            this.rsvp=old.rsvp;
+            this.num_threads=old.num_threads;
+            this.num_msgs=old.num_msgs;
+            this.msg_size=old.msg_size;
+        }
+
+        public ConfigOptions(boolean oob, boolean sync, boolean fc, boolean rsvp, int num_threads, int num_msgs, int msg_size) {
             this.oob=oob;
             this.sync=sync;
+            this.fc=fc;
+            this.rsvp=rsvp;
             this.num_threads=num_threads;
             this.num_msgs=num_msgs;
             this.msg_size=msg_size;
         }
 
-        public void writeTo(DataOutput out) throws Exception {
+        public String toString() {
+            return "oob=" + oob + ", sync=" + sync + ", fc=" + fc + ", rsvp=" + rsvp +
+              ", num_threads=" + num_threads + ", num_msgs=" + num_msgs + ", msg_size=" + msg_size;
+        }
+
+        @Override
+        public void writeExternal(ObjectOutput out) throws IOException {
             out.writeBoolean(oob);
             out.writeBoolean(sync);
+            out.writeBoolean(fc);
+            out.writeBoolean(rsvp);
             out.writeInt(num_threads);
             out.writeInt(num_msgs);
             out.writeInt(msg_size);
         }
 
-        public void readFrom(DataInput in) throws Exception {
+        @Override
+        public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
             oob=in.readBoolean();
             sync=in.readBoolean();
+            fc=in.readBoolean();
+            rsvp=in.readBoolean();
             num_threads=in.readInt();
             num_msgs=in.readInt();
             msg_size=in.readInt();
-        }
-
-        public String toString() {
-            return "oob=" + oob + ", sync=" + sync +
-              ", num_threads=" + num_threads + ", num_msgs=" + num_msgs + ", msg_size=" + msg_size;
-        }
-    }
-
-
-    static class CustomMarshaller implements RpcDispatcher.Marshaller {
-
-        public Buffer objectToBuffer(Object obj) throws Exception {
-            MethodCall call=(MethodCall)obj;
-            ByteBuffer buf;
-            switch(call.getId()) {
-                case START:
-                case GET_CONFIG:
-                    buf=ByteBuffer.allocate(Global.BYTE_SIZE);
-                    buf.put((byte)call.getId());
-                    return new Buffer(buf.array());
-                case SET_OOB:
-                case SET_SYNC:
-                    return new Buffer(booleanBuffer(call.getId(),(Boolean)call.getArgs()[0]));
-                case SET_NUM_MSGS:
-                case SET_NUM_THREADS:
-                case SET_MSG_SIZE:
-                    return new Buffer(intBuffer(call.getId(),(Integer)call.getArgs()[0]));
-                case APPLY_STATE:
-                    byte[] arg=(byte[])call.getArgs()[0];
-                    buf=ByteBuffer.allocate(Global.BYTE_SIZE + Global.INT_SIZE + arg.length);
-                    buf.put((byte)call.getId()).putInt(arg.length).put(arg,0,arg.length);
-                    return new Buffer(buf.array());
-                default:
-                    throw new IllegalStateException("method " + call.getMethod() + " not known");
-            }
-        }
-
-
-        public Object objectFromBuffer(byte[] buffer, int offset, int length) throws Exception {
-            ByteBuffer buf=ByteBuffer.wrap(buffer,offset,length);
-
-            byte type=buf.get();
-            switch(type) {
-                case START:
-                case GET_CONFIG:
-                    return new MethodCall(type);
-                case SET_OOB:
-                case SET_SYNC:
-                    return new MethodCall(type,buf.get() == 1);
-                case SET_NUM_MSGS:
-                case SET_NUM_THREADS:
-                case SET_MSG_SIZE:
-                    return new MethodCall(type,buf.getInt());
-                case APPLY_STATE:
-                    int len=buf.getInt();
-                    byte[] arg=new byte[len];
-                    buf.get(arg,0,arg.length);
-                    return new MethodCall(type,arg);
-                default:
-                    throw new IllegalStateException("type " + type + " not known");
-            }
-        }
-
-        private static byte[] intBuffer(short type, Integer num) {
-            ByteBuffer buf=ByteBuffer.allocate(Global.BYTE_SIZE + Global.INT_SIZE);
-            buf.put((byte)type).putInt(num);
-            return buf.array();
-        }
-
-        private static byte[] longBuffer(short type, Long num) {
-            ByteBuffer buf=ByteBuffer.allocate(Global.BYTE_SIZE + Global.LONG_SIZE);
-            buf.put((byte)type).putLong(num);
-            return buf.array();
-        }
-
-        private static byte[] booleanBuffer(short type, Boolean arg) {
-            ByteBuffer buf=ByteBuffer.allocate(Global.BYTE_SIZE * 2);
-            buf.put((byte)type).put((byte)(arg? 1 : 0));
-            return buf.array();
         }
     }
 
