@@ -26,6 +26,7 @@ import org.jgroups.blocks.ResponseMode;
 import org.jgroups.blocks.RpcDispatcher;
 import org.jgroups.conf.ClassConfigurator;
 import org.jgroups.jmx.JmxConfigurator;
+import org.jgroups.protocols.TP;
 import org.jgroups.protocols.UNICAST;
 import org.jgroups.protocols.UNICAST2;
 import org.jgroups.protocols.relay.RELAY2;
@@ -365,7 +366,7 @@ public class UPerf2 extends ReceiverAdapter {
     }
 
    private void printConnections() {
-        Protocol prot=channel.getProtocolStack().findProtocol(Util.getUnicastProtocols());
+        Protocol prot=channel.getProtocolStack().findProtocol(UNICAST.class, UNICAST2.class);
         if(prot instanceof UNICAST)
             System.out.println("connections:\n" + ((UNICAST)prot).printConnections());
         else if(prot instanceof UNICAST2)
@@ -375,7 +376,7 @@ public class UPerf2 extends ReceiverAdapter {
     private void removeConnection() {
         Address member=getReceiver();
         if(member != null) {
-            Protocol prot=channel.getProtocolStack().findProtocol(Util.getUnicastProtocols());
+            Protocol prot=channel.getProtocolStack().findProtocol(UNICAST.class, UNICAST2.class);
             if(prot instanceof UNICAST)
                 ((UNICAST)prot).removeConnection(member);
             else if(prot instanceof UNICAST2)
@@ -384,7 +385,7 @@ public class UPerf2 extends ReceiverAdapter {
     }
 
     private void removeAllConnections() {
-        Protocol prot=channel.getProtocolStack().findProtocol(Util.getUnicastProtocols());
+        Protocol prot=channel.getProtocolStack().findProtocol(UNICAST.class, UNICAST2.class);
         if(prot instanceof UNICAST)
             ((UNICAST)prot).removeAllConnections();
         else if(prot instanceof UNICAST2)
@@ -413,7 +414,7 @@ public class UPerf2 extends ReceiverAdapter {
         double total_reqs_sec=total_reqs / ( total_time/ 1000.0);
         double throughput=total_reqs_sec * msg_size;
         double ms_per_req=total_time / (double)total_reqs;
-        Protocol prot=channel.getProtocolStack().findProtocol(Util.getUnicastProtocols());
+        Protocol prot=channel.getProtocolStack().findProtocol(UNICAST.class, UNICAST2.class);
         System.out.println("\n");
         System.out.println(Util.bold("Average of " + f.format(total_reqs_sec) + " requests / sec (" +
                                        Util.printBytes(throughput) + " / sec), " +
@@ -469,7 +470,7 @@ public class UPerf2 extends ReceiverAdapter {
 
     protected static List<String> getSites(JChannel channel) {
         RELAY2 relay=(RELAY2)channel.getProtocolStack().findProtocol(RELAY2.class);
-        return relay != null? relay.siteNames() : new ArrayList<String>(0);
+        return new ArrayList<String>(0);
     }
 
     /** Picks the next member in the view */
