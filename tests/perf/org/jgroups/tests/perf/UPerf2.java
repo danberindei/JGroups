@@ -523,16 +523,15 @@ public class UPerf2 extends ReceiverAdapter {
 
                 try {
                     // sync GET
-                    Collection<Address> targets=pickGetTargets();
+                    Collection<Address> get_targets=pickGetTargets();
                     get_args[0]=i;
-                    //System.out.println("GET: targets=" + targets);
-                    disp.callRemoteMethods(targets, get_call, get_before_put_options);
+                    disp.callRemoteMethods(get_targets, get_call, get_before_put_options);
                     num_gets++;
 
                     // sync or async (based on value of 'sync') PUT
+                    Collection<Address> put_targets=pickPutTargets();
                     put_args[0]=i;
-                    //System.out.println("PUT: targets=" + targets);
-                    disp.callRemoteMethods(targets, put_call, put_options);
+                    disp.callRemoteMethods(put_targets, put_call, put_options);
                     num_puts++;
                 }
                 catch(Throwable throwable) {
@@ -550,7 +549,7 @@ public class UPerf2 extends ReceiverAdapter {
             if (startIndex >= members.size() - anycast_count)
                 return null;
 
-            int numTargets = Math.min(anycast_count, members.size() - 1);
+            int numTargets = Math.min(read_anycast_count, members.size() - 1);
             List<Address> targets = new ArrayList<Address>(numTargets);
             for (int i = 0; i < numTargets; ++i) {
                 targets.add(members.get((startIndex + i) % size));
