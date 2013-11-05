@@ -438,7 +438,7 @@ public class UPerf2 extends ReceiverAdapter {
     }
 
     void setReadAnycastCount() throws Exception {
-        double tmp=Util.readIntFromStdin("Read anycast count: ");
+        int tmp=Util.readIntFromStdin("Read anycast count: ");
         disp.callRemoteMethods(null, new MethodCall(SET_READ_ANYCAST_COUNT, tmp), RequestOptions.SYNC());
     }
 
@@ -708,6 +708,7 @@ public class UPerf2 extends ReceiverAdapter {
                 case SET_NUM_THREADS:
                 case SET_MSG_SIZE:
                 case SET_ANYCAST_COUNT:
+                case SET_READ_ANYCAST_COUNT:
                     return new Buffer(intBuffer(call.getId(), (Integer)call.getArgs()[0]));
                 case GET:
                     return new Buffer(longBuffer(call.getId(), (Long)call.getArgs()[0]));
@@ -716,11 +717,6 @@ public class UPerf2 extends ReceiverAdapter {
                     byte[] arg2=(byte[])call.getArgs()[1];
                     buf=ByteBuffer.allocate(Global.BYTE_SIZE + Global.INT_SIZE + Global.LONG_SIZE + arg2.length);
                     buf.put((byte)call.getId()).putLong(long_arg).putInt(arg2.length).put(arg2, 0, arg2.length);
-                    return new Buffer(buf.array());
-                case SET_READ_ANYCAST_COUNT:
-                    Double double_arg=(Double)call.getArgs()[0];
-                    buf=ByteBuffer.allocate(Global.BYTE_SIZE + Global.DOUBLE_SIZE);
-                    buf.put((byte)call.getId()).putDouble(double_arg);
                     return new Buffer(buf.array());
                 default:
                     throw new IllegalStateException("method " + call.getMethod() + " not known");
@@ -746,6 +742,7 @@ public class UPerf2 extends ReceiverAdapter {
                 case SET_NUM_THREADS:
                 case SET_MSG_SIZE:
                 case SET_ANYCAST_COUNT:
+                case SET_READ_ANYCAST_COUNT:
                     return new MethodCall(type, buf.getInt());
                 case GET:
                     return new MethodCall(type, buf.getLong());
@@ -755,8 +752,6 @@ public class UPerf2 extends ReceiverAdapter {
                     byte[] arg2=new byte[len];
                     buf.get(arg2, 0, arg2.length);
                     return new MethodCall(type, longarg, arg2);
-                case SET_READ_ANYCAST_COUNT:
-                    return new MethodCall(type, buf.getDouble());
                 default:
                     throw new IllegalStateException("type " + type + " not known");
             }
