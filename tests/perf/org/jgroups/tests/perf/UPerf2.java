@@ -522,16 +522,19 @@ public class UPerf2 extends ReceiverAdapter {
                     System.out.print(".");
 
                 try {
+                    List<Address> targets=pickAnycastTargets();
+
                     // sync GET
-                    Collection<Address> get_targets=pickGetTargets();
-                    get_args[0]=i;
-                    disp.callRemoteMethods(get_targets, get_call, get_before_put_options);
-                    num_gets++;
+                    if (!targets.contains(local_addr)) {
+                        get_args[0]=i;
+                        List<Address> get_targets = targets.subList(0, Math.min(targets.size(), read_anycast_count));
+                        disp.callRemoteMethods(get_targets, get_call, get_before_put_options);
+                        num_gets++;
+                    }
 
                     // sync or async (based on value of 'sync') PUT
-                    Collection<Address> put_targets=pickPutTargets();
                     put_args[0]=i;
-                    disp.callRemoteMethods(put_targets, put_call, put_options);
+                    disp.callRemoteMethods(targets, put_call, put_options);
                     num_puts++;
                 }
                 catch(Throwable throwable) {
@@ -540,36 +543,17 @@ public class UPerf2 extends ReceiverAdapter {
             }
         }
 
-        private List<Address> pickGetTargets() {
-            List<Address> members = dests;
-            int size = members.size() - 1;
-            int startIndex = random.nextInt(size);
+        private List<Address> pickAnycastTargets() {
+            List<Address> targets = new ArrayList<Address>(anycast_count);
+            for (int i = 0; i < anycast_count; ) {
+                int newIndex = random.nextInt(dests.size());
+                Address target = dests.get(newIndex);
 
-            // self also has the keys for the previous numOwners - 1 nodes
-            if (startIndex >= members.size() - anycast_count)
-                return null;
-
-            int numTargets = Math.min(read_anycast_count, members.size() - 1);
-            List<Address> targets = new ArrayList<Address>(numTargets);
-            for (int i = 0; i < numTargets; ++i) {
-                targets.add(members.get((startIndex + i) % size));
-            }
-            return targets;
-        }
-
-        private Collection<Address> pickPutTargets() {
-            List<Address> members = dests;
-            int size = members.size() - 1;
-            int startIndex = random.nextInt(size);
-
-            Collection<Address> targets = new ArrayList<Address>(anycast_count);
-            for (int i = 0; i < anycast_count; i++) {
-                int newIndex = (startIndex + i) % size;
-
-                if (newIndex == members.size() - 1)
-                    continue;
-
-                targets.add(members.get(newIndex));
+                // Allow adding self to the targets list, just don't add duplicates
+                if (!targets.contains(target)) {
+                    targets.add(target);
+                    i++;
+                }
             }
             return targets;
         }
