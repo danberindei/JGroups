@@ -583,6 +583,7 @@ public abstract class FlowControl extends Protocol {
             if(timeout <= 0)
                 return false;
 
+            log.trace("Waiting for credits: %d requested, %d available", credits, credits_left);
             long start=avg_blockings != null? System.nanoTime() : 0;
             try {
                 this.wait(timeout);
