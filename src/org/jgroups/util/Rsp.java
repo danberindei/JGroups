@@ -59,10 +59,11 @@ public class Rsp<T> {
         return retval;
     }
 
-    public void setValue(T val) {
+    public Rsp<T> setValue(T val) {
         this.retval=val;
         setReceived();
         exception=null;
+        return this;
     }
 
     public boolean hasException() {
