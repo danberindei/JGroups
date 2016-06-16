@@ -46,7 +46,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * <li>{@link #destroy()}
  * </ul>
  * The create() or start() method has to create a local address.<br>
- * The {@link #receive(Address, byte[], int, int)} method must
+ * The {@link #receive(Address, byte[], int, int,boolean)} method must
  * be called by subclasses when a unicast or multicast message has been received.
  * @author Bela Ban
  */
@@ -57,6 +57,7 @@ public abstract class TP extends Protocol implements DiagnosticsHandler.ProbeHan
     public static final byte       MULTICAST=2; // message is a multicast (versus a unicast) message when set
     public static final int        MSG_OVERHEAD=Global.SHORT_SIZE + Global.BYTE_SIZE; // version + flags
     public static final String     BUNDLE_MSG="%s: sending %d msgs (%d bytes (%.2f%% of max_bundle_size) to %d dests(s): %s";
+    protected static final int     MSG_OFFSET = Global.SHORT_SIZE + Global.BYTE_SIZE * 2; // offset for flags for single msgs
     protected static final long    MIN_WAIT_BETWEEN_DISCOVERIES=TimeUnit.NANOSECONDS.convert(10, TimeUnit.SECONDS);  // ns
     protected static final boolean can_bind_to_mcast_addr;
 
@@ -97,7 +98,7 @@ public abstract class TP extends Protocol implements DiagnosticsHandler.ProbeHan
     @Property(name="bind_interface", converter=PropertyConverters.BindInterface.class,
               description="The interface (NIC) which should be used by this transport", dependsUpon="bind_addr",
               exposeAsManagedAttribute=false)
-    protected String bind_interface_str;
+    protected String bind_interface_str=null;
     
     @Property(description="If true, the transport should use all available interfaces to receive multicast messages")
     protected boolean receive_on_all_interfaces=false;
@@ -1638,7 +1639,7 @@ public abstract class TP extends Protocol implements DiagnosticsHandler.ProbeHan
     /**
      * Subclasses must call this method when a unicast or multicast message has been received.
      */
-    public void receive(Address sender, byte[] data, int offset, int length) {
+    public void receive(Address sender, byte[] data, int offset, int length, boolean copy_buffer) {
         if(data == null) return;
 
         // drop message from self; it has already been looped back up (https://issues.jboss.org/browse/JGRP-1765)
@@ -1651,7 +1652,7 @@ public abstract class TP extends Protocol implements DiagnosticsHandler.ProbeHan
         if(is_message_list) // used if message bundling is enabled
             handleMessageBatch(sender, data, offset, length);
         else
-            handleSingleMessage(sender, data, offset, length);
+            handleSingleMessage(sender, data, offset, length, copy_buffer);
     }
 
 
@@ -1697,42 +1698,32 @@ public abstract class TP extends Protocol implements DiagnosticsHandler.ProbeHan
         }
     }
 
+    protected void handleSingleMessage(Address sender, byte[] data, int offset, int length, boolean copy_buffer) {
+        // the message flags are at indexes 4-5
+        short   msg_flags=Bits.makeShort(data[offset + MSG_OFFSET], data[offset + MSG_OFFSET +1]);
+        boolean internal=(msg_flags & Message.Flag.INTERNAL.value()) == Message.Flag.INTERNAL.value();
+        boolean oob=(msg_flags & Message.Flag.OOB.value()) == Message.Flag.OOB.value();
 
+        if(oob)
+            num_oob_msgs_received++;
+        else if(internal)
+            num_internal_msgs_received++;
+        else
+            num_incoming_msgs_received++;
 
-    protected void handleSingleMessage(Address sender, byte[] data, int offset, int length) {
+        Executor pool=pickThreadPool(oob, internal);
+
         try {
-            ByteArrayDataInputStream in=new ByteArrayDataInputStream(data, offset, length);
-            short version=in.readShort();
-            if(!versionMatch(version, sender))
-                return;
-
-            byte flags=in.readByte();
-            final boolean multicast=(flags & MULTICAST) == MULTICAST;
-            Message msg=new Message(false); // don't create headers, readFrom() will do this
-            msg.readFrom(in);
-
-            if(!multicast) {
-                Address dest=msg.getDest(), target=local_addr;
-                if(dest != null && target != null && !dest.equals(target))
-                    return;
+            if(!copy_buffer) // e.g. with TCP which creates a new buffer for each msg
+                pool.execute(new MyHandler(sender, data, offset, length)); // we don't make a copy if we execute on this thread
+            else {
+                byte[] tmp=new byte[length];
+                System.arraycopy(data, offset, tmp, 0, length);
+                pool.execute(new MyHandler(sender, tmp, 0, tmp.length));
             }
-
-            boolean oob=msg.isFlagSet(Message.Flag.OOB), internal=msg.isFlagSet(Message.Flag.INTERNAL);
-            if(oob)
-                num_oob_msgs_received++;
-            else if(internal)
-                num_internal_msgs_received++;
-            else
-                num_incoming_msgs_received++;
-
-            Executor pool=pickThreadPool(oob, internal);
-            pool.execute(new SingleMessageHandler(msg));
         }
         catch(RejectedExecutionException ex) {
             num_rejected_msgs++;
-        }
-        catch(Throwable t) {
-            log.error(Util.getMessage("IncomingMsgFailure"), local_addr, t);
         }
     }
 
@@ -1789,6 +1780,55 @@ public abstract class TP extends Protocol implements DiagnosticsHandler.ProbeHan
 
 
 
+    protected class MyHandler implements Runnable {
+        protected final Address sender;
+        protected final byte[]  data; // this is always a copy, or we use a DirectExecutor
+        protected final int     offset;
+        protected final int     length;
+
+        protected MyHandler(Address sender, byte[] data, int offset, int length) {
+            this.sender=sender;
+            this.data=data;
+            this.offset=offset;
+            this.length=length;
+        }
+
+        public void run() {
+            try {
+                ByteArrayDataInputStream in=new ByteArrayDataInputStream(data, offset, length);
+                short version=in.readShort();
+                if(!versionMatch(version, sender))
+                    return;
+
+                byte flags=in.readByte();
+                final boolean multicast=(flags & MULTICAST) == MULTICAST;
+                Message msg=new Message(false); // don't create headers, readFrom() will do this
+                int payload_offset=msg.readFromSkipPayload(in);
+
+                if(!multicast) {
+                    Address dest=msg.getDest(), target=local_addr;
+                    if(dest != null && target != null && !dest.equals(target))
+                        return;
+                }
+
+                if(payload_offset >= 0)
+                    msg.setBuffer(data, payload_offset, length - payload_offset);
+
+                if(stats) {
+                    num_msgs_received++;
+                    num_single_msgs_received++;
+                    num_bytes_received+=length;
+                }
+
+                TpHeader hdr=(TpHeader)msg.getHeader(id);
+                AsciiString cname=new AsciiString(hdr.cluster_name);
+                passMessageUp(msg, cname, true, multicast, true);
+            }
+            catch(Throwable t) {
+                log.error(Util.getMessage("IncomingMsgFailure"), local_addr, t);
+            }
+        }
+    }
 
     protected class SingleMessageHandler implements Runnable {
         protected final Message msg;
