@@ -143,7 +143,7 @@ public abstract class BasicTCP extends TP implements Receiver {
 
     /** BaseServer.Receiver interface */
     public void receive(Address sender, byte[] data, int offset, int length) {
-        super.receive(sender, data, offset, length);
+        super.receive(sender, data, offset, length, true);
     }
 
     public void receive(Address sender, ByteBuffer buf) {
