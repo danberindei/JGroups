@@ -5,7 +5,7 @@
     <artifactId>jgroups</artifactId>
     <packaging>bundle</packaging>
     <name>JGroups</name>
-    <version>3.6.4.Final</version>
+    <version>3.6.4.Final-compat-369</version>
     <url>http://www.jgroups.org</url>
 
     <properties>
@@ -217,7 +217,7 @@
                     </goals>
                     <configuration>
                        <sources>
-                          <source>tests/byteman</source>
+                          <!--<source>tests/byteman</source>-->
                           <source>tests/junit</source>
                           <source>tests/junit-functional</source>
                           <!-- tests/other and tests/perf are included in the normal sources -->

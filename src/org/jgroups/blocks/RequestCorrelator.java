@@ -149,7 +149,7 @@ public class RequestCorrelator {
         msg.putHeader(this.id, hdr);
 
         if(coll != null) {
-            addEntry(hdr.id, coll);
+            addEntry(hdr.req_id, coll);
             // make sure no view is received before we add ourself as a view handler (https://issues.jboss.org/browse/JGRP-1428)
             coll.viewChange(view);
         }
@@ -197,7 +197,7 @@ public class RequestCorrelator {
         msg.putHeader(this.id, hdr);
 
         if(coll != null) {
-            addEntry(hdr.id, coll);
+            addEntry(hdr.req_id, coll);
             // make sure no view is received before we add ourself as a view handler (https://issues.jboss.org/browse/JGRP-1428)
             coll.viewChange(view);
         }
@@ -379,7 +379,7 @@ public class RequestCorrelator {
 
             case Header.RSP:
             case Header.EXC_RSP:
-                RspCollector coll=requests.get(hdr.id);
+                RspCollector coll=requests.get(hdr.req_id);
                 if(coll != null) {
                     boolean is_exception=hdr.type == Header.EXC_RSP;
                     Address sender=msg.getSrc();
@@ -452,10 +452,10 @@ public class RequestCorrelator {
 
         if(log.isTraceEnabled()) {
             log.trace(new StringBuilder("calling (").append((request_handler != null? request_handler.getClass().getName() : "null")).
-                      append(") with request ").append(hdr.id));
+                      append(") with request ").append(hdr.req_id));
         }
         if(async_dispatching && request_handler instanceof AsyncRequestHandler) {
-            Response rsp=hdr.rsp_expected? new ResponseImpl(req, hdr.id) : null;
+            Response rsp=hdr.rsp_expected? new ResponseImpl(req, hdr.req_id) : null;
             try {
                 ((AsyncRequestHandler)request_handler).handle(req, rsp);
             }
@@ -476,7 +476,7 @@ public class RequestCorrelator {
             retval=new InvocationTargetException(t);
         }
         if(hdr.rsp_expected)
-            sendReply(req, hdr.id, retval, threw_exception);
+            sendReply(req, hdr.req_id, retval, threw_exception);
     }
 
 
@@ -514,7 +514,7 @@ public class RequestCorrelator {
         Header rsp_hdr=new Header(is_exception? Header.EXC_RSP : Header.RSP, req_id, false, id);
         rsp.putHeader(id, rsp_hdr);
         if(log.isTraceEnabled())
-            log.trace(new StringBuilder("sending rsp for ").append(rsp_hdr.id).append(" to ").append(rsp.getDest()));
+            log.trace(new StringBuilder("sending rsp for ").append(rsp_hdr.req_id).append(" to ").append(rsp.getDest()));
 
         transport.down(new Event(Event.MSG, rsp));
     }
@@ -558,7 +558,7 @@ public class RequestCorrelator {
         public byte    type;
         /**
          * The id of this request to distinguish among other requests from the same <tt>RequestCorrelator</tt> */
-        public long    id;
+        public long req_id;
 
         /** msg is synchronous if true */
         public boolean rsp_expected;
@@ -575,16 +575,20 @@ public class RequestCorrelator {
 
         /**
          * @param type type of header (<tt>REQ</tt>/<tt>RSP</tt>)
-         * @param id id of this header relative to ids of other requests
+         * @param req_id id of this header relative to ids of other requests
          * originating from the same correlator
          * @param rsp_expected whether it's a sync or async request
          * @param corr_id The ID of the <tt>RequestCorrelator</tt> from which
          */
-        public Header(byte type, long id, boolean rsp_expected, short corr_id) {
+        public Header(byte type, long req_id, boolean rsp_expected, short corr_id) {
             this.type         = type;
-            this.id           = id;
+            this.req_id = req_id;
             this.rsp_expected = rsp_expected;
             this.corrId       = corr_id;
+        }
+
+        public Header(byte type, long req_id, short corr_id) {
+            this(type, req_id, false, corr_id);
         }
 
         public String toString() {
@@ -599,7 +603,7 @@ public class RequestCorrelator {
                     break;
                 default: ret.append("<unknown>");
             }
-            ret.append(", id=" + id);
+            ret.append(", id=" + req_id);
             ret.append(", rsp_expected=" + rsp_expected);
             return ret.toString();
         }
@@ -607,21 +611,21 @@ public class RequestCorrelator {
 
         public void writeTo(DataOutput out) throws Exception {
             out.writeByte(type);
-            Bits.writeLong(id,out);
+            Bits.writeLong(req_id,out);
             out.writeBoolean(rsp_expected);
             out.writeShort(corrId);
         }
 
         public void readFrom(DataInput in) throws Exception {
             type=in.readByte();
-            id=Bits.readLong(in);
+            req_id =Bits.readLong(in);
             rsp_expected=in.readBoolean();
             corrId=in.readShort();
         }
 
         public int size() {
             return Global.BYTE_SIZE  // type
-              + Bits.size(id)        // id
+              + Bits.size(req_id)        // id
               + Global.BYTE_SIZE     // rsp_expected
               + Global.SHORT_SIZE;   // corrId
         }

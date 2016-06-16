@@ -857,7 +857,7 @@ public class SizeTest {
         hdr=new RequestCorrelator.Header();
         hdr.readFrom(in);
 
-        Assert.assertEquals(322649, hdr.id);
+        Assert.assertEquals(322649, hdr.req_id);
         assert hdr.rsp_expected;
         Assert.assertEquals((short)356, hdr.corrId);
         Assert.assertEquals(RequestCorrelator.Header.RSP, hdr.type);
@@ -879,7 +879,7 @@ public class SizeTest {
         hdr=new RequestCorrelator.Header();
         hdr.readFrom(in);
 
-        Assert.assertEquals(322649, hdr.id);
+        Assert.assertEquals(322649, hdr.req_id);
         assert hdr.rsp_expected;
         Assert.assertEquals(356, hdr.corrId);
         Assert.assertEquals(RequestCorrelator.Header.RSP, hdr.type);
