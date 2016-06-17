@@ -629,6 +629,10 @@ public class RequestCorrelator {
               + Global.BYTE_SIZE     // rsp_expected
               + Global.SHORT_SIZE;   // corrId
         }
+
+        public boolean rspExpected() {
+            return rsp_expected;
+        }
     }
 
 
