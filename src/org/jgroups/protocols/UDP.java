@@ -699,7 +699,9 @@ public class UDP extends TP {
                     }
 
                     receive(new IpAddress(packet.getAddress(), packet.getPort()),
-                            receive_buf, packet.getOffset(), len);
+                            receive_buf,
+                            packet.getOffset(),
+                            len, true); // copy packet as we're reusing receive_buf
                 }
                 catch(SocketException sock_ex) {
                     if(receiver_socket.isClosed()) {
